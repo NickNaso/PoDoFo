@@ -1,6 +1,8 @@
 # PoDoFo
 
-Mirror repository for PoDoFo a library to work with the PDF file format.
+## Mirror repository for PoDoFo a library to work with the PDF file format.
+
+### Version 0.9.5
 
 <ol>
 	<li><a href="#what_is_podofo">What is PoDoFo?</a></li>
@@ -27,7 +29,7 @@ Mirror repository for PoDoFo a library to work with the PDF file format.
 	<li><a href="#licensing">Licensing</a></li>
 </ol>
 
-<h2><a name="what_is_podofo" />>What is PoDoFo?</h2>
+<h2><a name="what_is_podofo" />What is PoDoFo?</h2>
 
 <p>PoDoFo is a library to work with the PDF file format and includes also a few
 tools. The name comes from the first two letters of PDF (<b>Po</b>rtable <b>Do</b>cument
