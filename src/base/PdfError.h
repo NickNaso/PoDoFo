@@ -53,10 +53,10 @@
 
 namespace PoDoFo {
 
-/** Error Code defines which are used in PdfError to describe the error.
+/** Error Code enum values which are used in PdfError to describe the error.
  *
- *  If you add an error code to this enum, please also add it to PdfError::ErrorName()
- *  and PdfError::ErrorMessage().
+ *  If you add an error code to this enum, please also add it
+ *  to PdfError::ErrorName() and PdfError::ErrorMessage().
  * 
  *  \see PdfError
  */
@@ -73,6 +73,7 @@ enum EPdfError {
     ePdfError_ValueOutOfRange,          /**< The specified memory is out of the allowed range. */
     ePdfError_InternalLogic,            /**< An internal sanity check or assertion failed. */ 
     ePdfError_InvalidEnumValue,         /**< An invalid enum value was specified. */
+    ePdfError_BrokenFile,               /**< The file content is broken. */
 
     ePdfError_PageNotFound,             /**< The requested page could not be found in the PDF. */
 
@@ -149,16 +150,18 @@ enum ELogSeverity {
 
 /** \def PODOFO_RAISE_ERROR( x )
  *  
- *  Set the value of the variable eCode (which has to exist in the current function) to x
- *  and return the eCode.
+ *  Throw an exception of type PdfError with the error code x, which should be
+ *  one of the values of the enum EPdfError. File and line info are included.
  */
 #define PODOFO_RAISE_ERROR( x ) throw ::PoDoFo::PdfError( x, __FILE__, __LINE__ );
 
 /** \def PODOFO_RAISE_ERROR_INFO( x, y )
  *  
- *  Set the value of the variable eCode (which has to exist in the current function) to x
- *  and return the eCode. Additionally additional information on the error y is set. y has 
- *  to be an c-string.
+ *  Throw an exception of type PdfError with the error code x, which should be
+ *  one of the values of the enum EPdfError. File and line info are included.
+ *  Additionally extra information on the error, y is set, which will also be
+ *  output by PdfError::PrintErrorMsg().
+ *  y can be a C string, but can also be a C++ std::string.
  */
 #define PODOFO_RAISE_ERROR_INFO( x, y ) throw ::PoDoFo::PdfError( x, __FILE__, __LINE__, y );
 
@@ -166,23 +169,14 @@ enum ELogSeverity {
  *
  *  Evaluate `x' as a binary predicate and if it is true, raise a logic error with the
  *  info string `y' .
- *
- *  This macro will be undefined when NDEBUG is set, so it's compiled out for release
- *  builds. Use it for expensive or extremely frequent sanity checking.
- *
- *  We define it then UNDEF it to help out doxygen.
  */
-#ifndef NDEBUG
-    // Woo for double-negatives. We define PODOFO_RAISE_LOGIC_IF unless we've been told not to by NDEBUG.
-    #define PODOFO_RAISE_LOGIC_IF( x, y ) { if (x) throw ::PoDoFo::PdfError( ePdfError_InternalLogic, __FILE__, __LINE__, y ); };
-#else
-    #define PODOFO_RAISE_LOGIC_IF( x, y ) {};
-#endif
+#define PODOFO_RAISE_LOGIC_IF( x, y ) { if (x) throw ::PoDoFo::PdfError( ePdfError_InternalLogic, __FILE__, __LINE__, y ); };
 
 class PODOFO_API PdfErrorInfo {
  public:
     PdfErrorInfo();
     PdfErrorInfo( int line, const char* pszFile, const char* pszInfo );
+    PdfErrorInfo( int line, const char* pszFile, std::string pszInfo );
     PdfErrorInfo( int line, const char* pszFile, const wchar_t* pszInfo );
     PdfErrorInfo( const PdfErrorInfo & rhs );
 
@@ -194,6 +188,7 @@ class PODOFO_API PdfErrorInfo {
     inline const std::wstring & GetInformationW() const { return m_swInfo; }
 
     inline void SetInformation( const char* pszInfo ) { m_sInfo = pszInfo ? pszInfo : ""; }
+    inline void SetInformation( std::string pszInfo ) { m_sInfo = pszInfo; }
     inline void SetInformation( const wchar_t* pszInfo ) { m_swInfo = pszInfo ? pszInfo : L""; }
 
  private:
@@ -213,15 +208,15 @@ typedef TDequeErrorInfo::const_iterator TCIDequeErrorInfo;
 // Without this define doxygen thinks we have a class called PODOFO_EXCEPTION_API(PODOFO_API) ...
 #define PODOFO_EXCEPTION_API_DOXYGEN PODOFO_EXCEPTION_API(PODOFO_API)
 
-/** The error handling class of PoDoFo lib.
- *  Whenever a function encounters an error
- *  a PdfError object is returned.
+/** The error handling class of the PoDoFo library.
+ *  If a method encounters an error,
+ *  a PdfError object is thrown as a C++ exception.
  *  
- *  A PdfError with Error() == ErrOk means
- *  successfull execution.
+ *  This class does not inherit from std::exception.
  *
- *  This class provides also meaningfull
- *  error descriptions.
+ *  This class also provides meaningful error descriptions
+ *  for the error codes which are values of the enum EPdfError,
+ *  which are all codes PoDoFo uses (except the first and last one).
  */
 class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
  public:
@@ -235,13 +230,13 @@ class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
         virtual void LogMessage( ELogSeverity eLogSeverity, const wchar_t* pszPrefix, const wchar_t* pszMsg, va_list & args ) = 0;
     };
 
-    /** Set a global static LogMessageCallback functor to repleace stderr output in LogMessageInternal
+    /** Set a global static LogMessageCallback functor to replace stderr output in LogMessageInternal.
      *  \param fLogMessageCallback the pointer to the new callback functor object
      *  \returns the pointer to the previous callback functor object
      */
     static LogMessageCallback* SetLogMessageCallback(LogMessageCallback* fLogMessageCallback);
 
-    /** Create a PdfError object initialized to ErrOk
+    /** Create a PdfError object initialized to ePdfError_ErrOk.
      */
     PdfError();
 
@@ -251,11 +246,21 @@ class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
      *         Use the compiler macro __FILE__ to initialize the field.
      *  \param line the line in which the error has occured.
      *         Use the compiler macro __LINE__ to initialize the field.
-     *  \param pszInformation additional information on this error which mayy
-     *                        be formatted like printf
+     *  \param pszInformation additional information on this error
      */
     PdfError( const EPdfError & eCode, const char* pszFile = NULL, int line = 0, 
               const char* pszInformation = NULL );
+
+    /** Create a PdfError object with a given error code.
+     *  \param eCode the error code of this object
+     *  \param pszFile the file in which the error has occured. 
+     *         Use the compiler macro __FILE__ to initialize the field.
+     *  \param line the line in which the error has occured.
+     *         Use the compiler macro __LINE__ to initialize the field.
+     *  \param sInformation additional information on this error
+     */
+    explicit PdfError( const EPdfError & eCode, const char* pszFile, int line, 
+                        std::string sInformation );
 
     /** Copy constructor
      *  \param rhs copy the contents of rhs into this object
@@ -276,37 +281,39 @@ class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
      */
     const PdfError & operator=( const EPdfError & eCode );
 
-    /** Comparison operator compares 2 PdfError objects
+    /** Comparison operator, compares 2 PdfError objects
      *  \param rhs another PdfError object
      *  \returns true if both objects have the same error code.
      */
     bool operator==( const PdfError & rhs );
 
-    /** Overloaded comparison operator compares 2 PdfError objects
-     *  \param eCode an erroce code
+    /** Overloaded comparison operator, compares this PdfError object
+     *  with an error code
+     *  \param eCode an error code (value of the enum EPdfError)
      *  \returns true if this object has the same error code.
      */
     bool operator==( const EPdfError & eCode );
 
-    /** Comparison operator compares 2 PdfError objects
+    /** Comparison operator, compares 2 PdfError objects
      *  \param rhs another PdfError object
-     *  \returns true if both objects have the different error code.
+     *  \returns true if the objects have different error codes.
      */
     bool operator!=( const PdfError & rhs );
 
-    /** Overloaded comparison operator compares 2 PdfError objects
-     *  \param eCode an erroce code
-     *  \returns true if this object has different error code.
+    /** Overloaded comparison operator, compares this PdfError object
+     *  with an error code
+     *  \param eCode an error code (value of the enum EPdfError)
+     *  \returns true if this object has a different error code.
      */
     bool operator!=( const EPdfError & eCode );
 
-    /** Return the error code of this object
+    /** Return the error code of this object.
      *  \returns the error code of this object
      */
     inline EPdfError GetError() const;
 
-    /** Get access to the internal callstack of this error
-     *  \return the callstack
+    /** Get access to the internal callstack of this error.
+     *  \returns the callstack deque of PdfErrorInfo objects.
      */
     inline const TDequeErrorInfo & GetCallstack() const;
 
@@ -318,21 +325,36 @@ class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
      *  \param line    the line of source causing the error
      *                 or 0. Typically you will use the gcc 
      *                 macro __LINE__ here.
-     *  \param pszInformation additional information on the error.
+     *  \param sInformation additional information on the error.
+     *         e.g. how to fix the error. This string is intended to 
+     *         be shown to the user.
+     */
+    inline void SetError( const EPdfError & eCode, const char* pszFile, int line,
+                        std::string sInformation );
+
+    /** Set the error code of this object.
+     *  \param eCode the error code of this object
+     *  \param pszFile the filename of the source file causing
+     *                 the error or NULL. Typically you will use
+     *                 the gcc macro __FILE__ here.
+     *  \param line    the line of source causing the error
+     *                 or 0. Typically you will use the gcc 
+     *                 macro __LINE__ here.
+     *  \param pszInformation additional information on the error,
      *         e.g. how to fix the error. This string is intended to 
      *         be shown to the user.
      */
     inline void SetError( const EPdfError & eCode, const char* pszFile = NULL, int line = 0, const char* pszInformation = NULL );
 
-    /** Set additional error informatiom
-     *  \param pszInformation additional information on the error.
+    /** Set additional error information.
+     *  \param pszInformation additional information on the error,
      *         e.g. how to fix the error. This string is intended to 
      *         be shown to the user.
      */
     inline void SetErrorInformation( const char* pszInformation );
 
-    /** Set additional error informatiom
-     *  \param pszInformation additional information on the error.
+    /** Set additional error information.
+     *  \param pszInformation additional information on the error,
      *         e.g. how to fix the error. This string is intended to 
      *         be shown to the user.
      */
@@ -347,23 +369,39 @@ class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
      *  \param line    the line of source causing the error
      *                 or 0. Typically you will use the gcc 
      *                 macro __LINE__ here.
-     *  \param pszInformation additional information on the error.
+     *  \param pszInformation additional information on the error,
      *         e.g. how to fix the error. This string is intended to 
      *         be shown to the user.
      */
     inline void AddToCallstack( const char* pszFile = NULL, int line = 0, const char* pszInformation = NULL );
 
+	/** Add callstack information to an error object. Always call this function
+     *  if you get an error object but do not handle the error but throw it again.
+     *
+     *  \param pszFile the filename of the source file causing
+     *                 the error or NULL. Typically you will use
+     *                 the gcc macro __FILE__ here.
+     *  \param line    the line of source causing the error
+     *                 or 0. Typically you will use the gcc 
+     *                 macro __LINE__ here.
+     *  \param sInformation additional information on the error,
+     *         e.g. how to fix the error. This string is intended to 
+     *         be shown to the user.
+     */
+    inline void AddToCallstack( const char* pszFile, int line, std::string sInformation );
+
     /** \returns true if an error code was set 
-     *           and false if the error code is ePdfError_ErrOk
+     *           and false if the error code is ePdfError_ErrOk.
      */
     inline bool IsError() const;
 
-    /** Print an error message to stderr
+    /** Print an error message to stderr. This includes callstack
+     *  and extra info, if any of either was set.
      */
     void PrintErrorMsg() const;
 
     /** Obtain error description.
-     *  \returns a c string describing the error.
+     *  \returns a C string describing the error.
      */
     const char* what() const;
 
@@ -392,7 +430,7 @@ class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
      */
     static void LogMessage( ELogSeverity eLogSeverity, const wchar_t* pszMsg, ... );
 
-     /** Enable or disable Logging
+     /** Enable or disable logging.
      *  \param bEnable       enable (true) or disable (false)
      */
     static void EnableLogging( bool bEnable );
@@ -401,12 +439,12 @@ class PODOFO_EXCEPTION_API_DOXYGEN PdfError {
      */
     static bool LoggingEnabled();
     
-    /** Log a message to the logging system defined for PoDoFo for debugging
+    /** Log a message to the logging system defined for PoDoFo for debugging.
      *  \param pszMsg       the message to be logged
      */
     static void DebugMessage( const char* pszMsg, ... );
 
-    /** Enable or disable the display of debugging messages
+    /** Enable or disable the display of debugging messages.
      *  \param bEnable       enable (true) or disable (false)
      */
     static void EnableDebug( bool bEnable );
@@ -484,6 +522,22 @@ void PdfError::AddToCallstack( const char* pszFile, int line, const char* pszInf
     m_callStack.push_front( PdfErrorInfo( line, pszFile, pszInformation ) );
 }
 
+// -----------------------------------------------------
+// 
+// -----------------------------------------------------
+void PdfError::SetError( const EPdfError & eCode, const char* pszFile, int line, std::string sInformation )
+{
+    m_error = eCode;
+    this->AddToCallstack( pszFile, line, sInformation );
+}
+
+// -----------------------------------------------------
+// 
+// -----------------------------------------------------
+void PdfError::AddToCallstack( const char* pszFile, int line, std::string sInformation )
+{
+    m_callStack.push_front( PdfErrorInfo( line, pszFile, sInformation ) );
+}
 // -----------------------------------------------------
 // 
 // -----------------------------------------------------

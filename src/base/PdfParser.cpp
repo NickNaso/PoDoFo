@@ -63,6 +63,8 @@ using std::flush;
 
 #if defined( PTRDIFF_MAX )
 #define PDF_LONG_MAX PTRDIFF_MAX
+#elif defined( __PTRDIFF_MAX__ )
+#define PDF_LONG_MAX __PTRDIFF_MAX__
 #else
 // only old compilers don't define PTRDIFF_MAX (all 32-bit only?)
 #define PDF_LONG_MAX INT_MAX
@@ -70,7 +72,47 @@ using std::flush;
 
 namespace PoDoFo {
 
-long PdfParser::s_nMaxObjects = std::numeric_limits<long>::max();
+const long nMaxNumIndirectObjects = (1L << 23) - 1L;
+long PdfParser::s_nMaxObjects = nMaxNumIndirectObjects;
+  
+    
+class PdfRecursionGuard
+{
+  // RAII recursion guard ensures m_nRecursionDepth is always decremented
+  // because the destructor is always called when control leaves a method
+  // via return or an exception.
+  // see http://en.cppreference.com/w/cpp/language/raii
+
+  // It's used like this in PdfParser methods
+  // PdfRecursionGuard guard(m_nRecursionDepth);
+
+  public:
+    PdfRecursionGuard( int& nRecursionDepth ) 
+    : m_nRecursionDepth(nRecursionDepth) 
+    { 
+        // be careful changing this limit - overflow limits depend on the OS, linker settings, and how much stack space compiler allocates
+        // 500 limit prevents overflow on Win7 with VC++ 2005 with default linker stack size (1000 caused overflow with same compiler/OS)
+        const int maxRecursionDepth = 500;
+
+        ++m_nRecursionDepth;
+
+        if ( m_nRecursionDepth > maxRecursionDepth )
+        {
+            // avoid stack overflow on documents that have circular cross references in /Prev entries
+            // in trailer and XRef streams (possible via a chain of entries with a loop)
+            PODOFO_RAISE_ERROR( ePdfError_InvalidXRef );
+        }    
+    }
+
+    ~PdfRecursionGuard() 
+    { 
+        --m_nRecursionDepth;    
+    }
+
+  private:
+    // must be a reference so that we modify m_nRecursionDepth in parent class
+    int& m_nRecursionDepth;
+};
 
 PdfParser::PdfParser( PdfVecObjects* pVecObjects )
     : PdfTokenizer(), m_vecObjects( pVecObjects ), m_bStrictParsing( false )
@@ -145,7 +187,7 @@ void PdfParser::Init()
 
     m_bIgnoreBrokenObjects = false;
     m_nIncrementalUpdates = 0;
-    m_nReadNextTrailerLevel = 0;
+    m_nRecursionDepth = 0;
 }
 
 void PdfParser::ParseFile( const char* pszFilename, bool bLoadOnDemand )
@@ -165,8 +207,6 @@ void PdfParser::ParseFile( const char* pszFilename, bool bLoadOnDemand )
 }
 
 #ifdef _WIN32
-#if defined(_MSC_VER)  &&  _MSC_VER <= 1200			// not for MS Visual Studio 6
-#else
 void PdfParser::ParseFile( const wchar_t* pszFilename, bool bLoadOnDemand )
 {
     if( !pszFilename || !pszFilename[0] )
@@ -184,7 +224,6 @@ void PdfParser::ParseFile( const wchar_t* pszFilename, bool bLoadOnDemand )
 
     this->ParseFile( device, bLoadOnDemand );
 }
-#endif
 #endif // _WIN32
 
 void PdfParser::ParseFile( const char* pBuffer, long lLen, bool bLoadOnDemand )
@@ -315,13 +354,10 @@ void PdfParser::ReadDocumentStructure()
         m_nNumObjects = 0;
     }
 
-    // allow caller to specify a max object count to avoid very slow load times on large documents
-    if (s_nMaxObjects != std::numeric_limits<long>::max()
-        && m_nNumObjects > s_nMaxObjects)
-        PODOFO_RAISE_ERROR_INFO( ePdfError_ValueOutOfRange,  "m_nNumObjects is greater than m_nMaxObjects." );
-
     if (m_nNumObjects > 0)
-        m_offsets.resize(m_nNumObjects);
+    {
+      ResizeOffsets( m_nNumObjects );
+    }
 
     if( m_pLinearization )
     {
@@ -515,17 +551,7 @@ void PdfParser::MergeTrailer( const PdfObject* pTrailer )
 
 void PdfParser::ReadNextTrailer()
 {
-    // be careful changing this limit - overflow limits depend on the OS, linker settings, and how much stack space compiler allocates
-    // 500 limit prevents overflow on Win7 with VC++ 2005 with default linker stack size (1000 caused overflow with same compiler/OS)
-    const int maxReadNextTrailerLevel = 500;
-    
-    ++m_nReadNextTrailerLevel;
-    
-    if ( m_nReadNextTrailerLevel > maxReadNextTrailerLevel )
-    {
-        // avoid stack overflow on documents that have circular cross references in trailer
-        PODOFO_RAISE_ERROR( ePdfError_InvalidXRef );
-    }
+    PdfRecursionGuard guard(m_nRecursionDepth);
 
     // ReadXRefcontents has read the first 't' from "trailer" so just check for "railer"
     if( this->IsNextToken( "trailer" ) )
@@ -565,7 +591,12 @@ void PdfParser::ReadNextTrailer()
             m_nIncrementalUpdates++;
 
             try {
-                ReadXRefContents( static_cast<pdf_long>(trailer.GetDictionary().GetKeyAsLong( "Prev", 0 )) );
+                pdf_long lOffset = static_cast<pdf_long>(trailer.GetDictionary().GetKeyAsLong( "Prev", 0 ));
+
+                if( m_visitedXRefOffsets.find( lOffset ) == m_visitedXRefOffsets.end() )
+                    ReadXRefContents( lOffset );
+                else
+                    PdfError::LogMessage( eLogSeverity_Warning, "XRef contents at offset %" PDF_FORMAT_INT64 " requested twice, skipping the second read\n", static_cast<pdf_int64>( lOffset ));
             } catch( PdfError & e ) {
                 e.AddToCallstack( __FILE__, __LINE__, "Unable to load /Prev xref entries." );
                 throw e;
@@ -576,8 +607,6 @@ void PdfParser::ReadNextTrailer()
     {
         PODOFO_RAISE_ERROR( ePdfError_NoTrailer );
     }
-
-    --m_nReadNextTrailerLevel;
 }
 
 void PdfParser::ReadTrailer()
@@ -615,7 +644,7 @@ void PdfParser::ReadTrailer()
             throw e;
         }
 #ifdef PODOFO_VERBOSE_DEBUG
-        PdfError::DebugMessage("Size=%li\n", m_pTrailer->GetDictionary().GetKeyAsLong( PdfName::KeySize, 0 ) );
+        PdfError::DebugMessage("Size=%" PDF_FORMAT_INT64 "\n", m_pTrailer->GetDictionary().GetKeyAsLong( PdfName::KeySize, 0 ) );
 #endif // PODOFO_VERBOSE_DEBUG
     }
 }
@@ -643,9 +672,25 @@ void PdfParser::ReadXRef( pdf_long* pXRefOffset )
 
 void PdfParser::ReadXRefContents( pdf_long lOffset, bool bPositionAtEnd )
 {
+    PdfRecursionGuard guard(m_nRecursionDepth);
+
     pdf_int64 nFirstObject = 0;
     pdf_int64 nNumObjects  = 0;
 
+    if( m_visitedXRefOffsets.find( lOffset ) != m_visitedXRefOffsets.end() )
+    {
+        std::ostringstream oss;
+        oss << "Cycle in xref structure. Offset  "
+            << lOffset << " already visited.";
+        
+        PODOFO_RAISE_ERROR_INFO( ePdfError_InvalidXRef, oss.str() );
+    }
+    else
+    {
+        m_visitedXRefOffsets.insert( lOffset );
+    }
+    
+    
     size_t curPosition = m_device.Device()->Tell();
     m_device.Device()->Seek(0,std::ios_base::end);
     std::streamoff fileSize = m_device.Device()->Tell();
@@ -728,7 +773,7 @@ void PdfParser::ReadXRefContents( pdf_long lOffset, bool bPositionAtEnd )
             if( e == ePdfError_NoNumber || e == ePdfError_InvalidXRef || e == ePdfError_UnexpectedEOF ) 
                 break;
             else 
-            {
+	    {
                 e.AddToCallstack( __FILE__, __LINE__ );
                 throw e;
             }
@@ -748,30 +793,72 @@ void PdfParser::ReadXRefContents( pdf_long lOffset, bool bPositionAtEnd )
 
 void PdfParser::ReadXRefSubsection( pdf_int64 & nFirstObject, pdf_int64 & nNumObjects )
 {
-    int count = 0;
+    pdf_int64 count = 0;
 
 #ifdef PODOFO_VERBOSE_DEBUG
     PdfError::DebugMessage("Reading XRef Section: %" PDF_FORMAT_INT64 " with %" PDF_FORMAT_INT64 " Objects.\n", nFirstObject, nNumObjects );
 #endif // PODOFO_VERBOSE_DEBUG 
 
-    if ( nFirstObject + nNumObjects > m_nNumObjects )
-    {
-        // Total number of xref entries to read is greater than the /Size
-        // specified in the trailer if any. That's an error unless we're trying
-        // to recover from a missing /Size entry.
-		PdfError::LogMessage( eLogSeverity_Warning,
-			      "There are more objects (%" PDF_FORMAT_INT64 ") in this XRef table than "
-			      "specified in the size key of the trailer directory (%" PDF_FORMAT_INT64 ")!\n",
-			      nFirstObject + nNumObjects, m_nNumObjects );
+    if ( nFirstObject < 0 )
+        PODOFO_RAISE_ERROR_INFO( ePdfError_ValueOutOfRange, "ReadXRefSubsection: nFirstObject is negative" );
+    if ( nNumObjects < 0 )
+        PODOFO_RAISE_ERROR_INFO( ePdfError_ValueOutOfRange, "ReadXRefSubsection: nNumObjects is negative" );
 
+    const pdf_int64 maxNum
+      = static_cast<pdf_int64>(PdfParser::s_nMaxObjects);
+
+    // overflow guard, fixes CVE-2017-5853 (signed integer overflow)
+    // also fixes CVE-2017-6844 (buffer overflow) together with below size check
+    if( (maxNum >= nNumObjects) && (nFirstObject <= maxNum - nNumObjects) )
+    {
+        if( nFirstObject + nNumObjects > m_nNumObjects )
+        {
+            // Total number of xref entries to read is greater than the /Size
+            // specified in the trailer if any. That's an error unless we're
+            // trying to recover from a missing /Size entry.
+            PdfError::LogMessage( eLogSeverity_Warning,
+              "There are more objects (%" PDF_FORMAT_INT64 ") in this XRef "
+              "table than specified in the size key of the trailer directory "
+              "(%" PDF_FORMAT_INT64 ")!\n", nFirstObject + nNumObjects,
+              static_cast<pdf_int64>( m_nNumObjects ));
+        }
+
+        if ( static_cast<pdf_uint64>( nFirstObject ) + static_cast<pdf_uint64>( nNumObjects ) > static_cast<pdf_uint64>( std::numeric_limits<size_t>::max() ) )
+        {
+            PODOFO_RAISE_ERROR_INFO( ePdfError_ValueOutOfRange,
+                "xref subsection's given entry numbers together too large" );
+        }
+        
+        if( nFirstObject + nNumObjects > m_nNumObjects )
+        {
+            try {
+  	      
 #ifdef _WIN32
-		m_nNumObjects = static_cast<long>(nFirstObject + nNumObjects);
-		m_offsets.resize(static_cast<long>(nFirstObject+nNumObjects));
+                m_nNumObjects = static_cast<long>(nFirstObject+nNumObjects);
 #else
-		m_nNumObjects = nFirstObject + nNumObjects;
-		m_offsets.resize(nFirstObject+nNumObjects);
+                m_nNumObjects = nFirstObject + nNumObjects;
 #endif // _WIN32
-	}
+                ResizeOffsets(nFirstObject + nNumObjects);
+
+            } catch (std::exception &) {
+                // If m_nNumObjects*sizeof(TXRefEntry) > std::numeric_limits<size_t>::max() then
+                // resize() throws std::length_error, for smaller allocations that fail it may throw
+                // std::bad_alloc (implementation-dependent). "20.5.5.12 Restrictions on exception 
+                // handling" in the C++ Standard says any function that throws an exception is allowed 
+                // to throw implementation-defined exceptions derived the base type (std::exception)
+                // so we need to catch all std::exceptions here
+                PODOFO_RAISE_ERROR( ePdfError_OutOfMemory );
+            }
+        }
+    }
+    else
+    {
+        PdfError::LogMessage( eLogSeverity_Error, "There are more objects (%" PDF_FORMAT_INT64
+            " + %" PDF_FORMAT_INT64 " seemingly) in this XRef"
+            " table than supported by standard PDF, or it's inconsistent.\n",
+            nFirstObject, nNumObjects);
+        PODOFO_RAISE_ERROR( ePdfError_InvalidXRef );
+    }
 
     // consume all whitespaces
     int charcode;
@@ -842,6 +929,8 @@ void PdfParser::ReadXRefSubsection( pdf_int64 & nFirstObject, pdf_int64 & nNumOb
 
 void PdfParser::ReadXRefStreamContents( pdf_long lOffset, bool bReadOnlyTrailer )
 {
+    PdfRecursionGuard guard(m_nRecursionDepth);
+
     m_device.Device()->Seek( lOffset );
 
     PdfXRefStreamParserObject xrefObject( m_vecObjects, m_device, m_buffer, &m_offsets );
@@ -858,7 +947,7 @@ void PdfParser::ReadXRefStreamContents( pdf_long lOffset, bool bReadOnlyTrailer 
     xrefObject.ReadXRefTable();
 
     // Check for a previous XRefStm or xref table
-    if(xrefObject.HasPrevious()) 
+    if(xrefObject.HasPrevious() && xrefObject.GetPreviousOffset() != lOffset) 
     {
         try {
             m_nIncrementalUpdates++;
@@ -951,6 +1040,14 @@ void PdfParser::ReadObjects()
         if( pEncrypt->IsReference() ) 
         {
             i = pEncrypt->GetReference().ObjectNumber();
+            if( i <= 0 || static_cast<size_t>( i ) >= m_offsets.size () )
+            {
+                std::ostringstream oss;
+                oss << "Encryption dictionary references a nonexistent object " << pEncrypt->GetReference().ObjectNumber() << " " 
+                    << pEncrypt->GetReference().GenerationNumber();
+                PODOFO_RAISE_ERROR_INFO( ePdfError_InvalidEncryptionDict, oss.str().c_str() );
+            }
+
             pObject = new PdfParserObject( m_vecObjects, m_device, m_buffer, m_offsets[i].lOffset );
             if( !pObject )
                 PODOFO_RAISE_ERROR( ePdfError_OutOfMemory );
@@ -1352,6 +1449,17 @@ void PdfParser::UpdateDocumentVersion()
         }
     }
     
+}
+
+void PdfParser::ResizeOffsets( pdf_long nNewSize )
+{
+    // allow caller to specify a max object count to avoid very slow load times on large documents
+    if (nNewSize > s_nMaxObjects)
+    {
+        PODOFO_RAISE_ERROR_INFO( ePdfError_ValueOutOfRange,  "nNewSize is greater than m_nMaxObjects." );
+    }
+    
+    m_offsets.resize( nNewSize );  
 }
 
 void PdfParser::CheckEOFMarker()

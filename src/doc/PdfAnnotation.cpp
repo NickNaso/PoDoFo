@@ -93,10 +93,6 @@ PdfAnnotation::PdfAnnotation( PdfPage* pPage, EPdfAnnotation eAnnot, const PdfRe
     }
 
     rRect.ToVariant( rect );
-
-    this->GetObject()->GetDictionary().AddKey( PdfName::KeyRect, rect );
-
-    rRect.ToVariant( rect );
     date.ToString( sDate );
     
     this->GetObject()->GetDictionary().AddKey( PdfName::KeySubtype, name );
@@ -123,6 +119,13 @@ PdfRect PdfAnnotation::GetRect() const
         return PdfRect( this->GetObject()->GetDictionary().GetKey( PdfName::KeyRect )->GetArray() );
 
    return PdfRect();
+}
+
+void PdfAnnotation::SetRect(const PdfRect & rRect)
+{
+    PdfVariant rect;
+    rRect.ToVariant( rect );
+    this->GetObject()->GetDictionary().AddKey( PdfName::KeyRect, rect );
 }
 
 void SetAppearanceStreamForObject( PdfObject* pForObject, PdfXObject* pObject, EPdfAnnotationAppearance eAppearance, const PdfName & state )
@@ -379,7 +382,7 @@ void PdfAnnotation::SetQuadPoints( const PdfArray & rQuadPoints )
          m_eAnnotation != ePdfAnnotation_Underline &&
 	 m_eAnnotation != ePdfAnnotation_Squiggly  &&
 	 m_eAnnotation != ePdfAnnotation_StrikeOut )
-        PODOFO_RAISE_ERROR_INFO( ePdfError_InternalLogic, "Must be a text markup annotation (hilight, underline, squiggly or strikeout) to set quad points" );
+        PODOFO_RAISE_ERROR_INFO( ePdfError_InternalLogic, "Must be a text markup annotation (highlight, underline, squiggly or strikeout) to set quad points" );
 
     this->GetObject()->GetDictionary().AddKey( "QuadPoints", rQuadPoints );
 }

@@ -60,6 +60,12 @@ PdfErrorInfo::PdfErrorInfo()
 {
 }
 
+PdfErrorInfo::PdfErrorInfo( int line, const char* pszFile, std::string sInfo )
+    : m_nLine( line ), m_sFile( pszFile ? pszFile : "" ), m_sInfo( sInfo )
+{
+
+}
+
 PdfErrorInfo::PdfErrorInfo( int line, const char* pszFile, const char* pszInfo )
     : m_nLine( line ), m_sFile( pszFile ? pszFile : "" ), m_sInfo( pszInfo ? pszInfo : "" )
 {
@@ -93,6 +99,12 @@ const PdfErrorInfo & PdfErrorInfo::operator=( const PdfErrorInfo & rhs )
 PdfError::PdfError()
 {
     m_error = ePdfError_ErrOk;
+}
+
+PdfError::PdfError( const EPdfError & eCode, const char* pszFile, int line, 
+                    std::string sInformation )
+{
+    this->SetError( eCode, pszFile, line, sInformation );
 }
 
 PdfError::PdfError( const EPdfError & eCode, const char* pszFile, int line, 
@@ -221,6 +233,9 @@ const char* PdfError::ErrorName( EPdfError eCode )
             break;
         case ePdfError_InvalidEnumValue:
             pszMsg = "ePdfError_InvalidEnumValue";
+            break;
+        case ePdfError_BrokenFile:
+            pszMsg = "ePdfError_BrokenFile";
             break;
         case ePdfError_PageNotFound:
             pszMsg = "ePdfError_PageNotFound";
@@ -396,6 +411,9 @@ const char* PdfError::ErrorMessage( EPdfError eCode )
             break;
         case ePdfError_InvalidEnumValue:
             pszMsg = "An invalid enum value was specified.";
+            break;
+        case ePdfError_BrokenFile:
+            pszMsg = "The file content is broken.";
             break;
         case ePdfError_PageNotFound:
             pszMsg = "The requested page could not be found in the PDF.";

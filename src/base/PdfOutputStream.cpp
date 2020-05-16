@@ -85,6 +85,11 @@ PdfMemoryOutputStream::PdfMemoryOutputStream( pdf_long lInitial )
 PdfMemoryOutputStream::PdfMemoryOutputStream( char* pBuffer, pdf_long lLen )
     : m_lLen( 0 ), m_bOwnBuffer( false )
 {
+    if( !pBuffer ) 
+    {
+        PODOFO_RAISE_ERROR( ePdfError_InvalidHandle );
+    }
+
     m_lSize   = lLen;
     m_pBuffer = pBuffer;
 }
@@ -98,7 +103,7 @@ PdfMemoryOutputStream::~PdfMemoryOutputStream()
 
 pdf_long PdfMemoryOutputStream::Write( const char* pBuffer, pdf_long lLen )
 {
-    if( !m_pBuffer ) 
+    if( !pBuffer ) 
     {
         PODOFO_RAISE_ERROR( ePdfError_InvalidHandle );
     }

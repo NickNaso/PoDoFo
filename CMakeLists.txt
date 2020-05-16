@@ -12,7 +12,7 @@ PROJECT(PoDoFo)
 
 SET(PODOFO_VERSION_MAJOR "0" CACHE STRING "Major part of PoDoFo version number")
 SET(PODOFO_VERSION_MINOR "9" CACHE STRING "Minor part of PoDoFo version number")
-SET(PODOFO_VERSION_PATCH "5" CACHE STRING "Patchlevel part of PoDoFo version number")
+SET(PODOFO_VERSION_PATCH "6" CACHE STRING "Patchlevel part of PoDoFo version number")
 SET(PODOFO_SOVERSION "${PODOFO_VERSION_MAJOR}.${PODOFO_VERSION_MINOR}.${PODOFO_VERSION_PATCH}")
 SET(PODOFO_LIBVERSION "${PODOFO_SOVERSION}")
 
@@ -32,7 +32,9 @@ INCLUDE(CheckTypeSize)
 # Prefer files in CMAKE_MODULE_PATH over shipped ones in module directory
 CMAKE_POLICY(SET CMP0017 NEW) # https://cmake.org/cmake/help/v3.0/policy/CMP0017.html
 # Do not use export_library_dependencies() anymore
+if(POLICY CMP0033)
 CMAKE_POLICY(SET CMP0033 NEW) # https://cmake.org/cmake/help/v3.0/policy/CMP0033.html
+endif()
 
 # Load modules from our source tree too
 SET(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
@@ -279,26 +281,16 @@ IF(CMAKE_COMPILER_IS_GNUCXX)
     # We can be more specific about what we want out of g++
     # than with most other compilers.
 
-    # Attempt to detect the gcc version. You must not rely on
-    # this; use the detected version as a guide only.
-    EXEC_PROGRAM(gcc ARGS --version OUTPUT_VARIABLE GCC_VERSION)
-    IF(GCC_VERSION MATCHES ".*\\(GCC\\) 4\\.[0-9].*")
-        MESSAGE("Have gcc 4.x")
-        SET(PODOFO_HAVE_GCC4 1)
-    ELSE(GCC_VERSION MATCHES ".*\\(GCC\\) 4\\.[0-9].*")
-        SET(PODOFO_HAVE_GCC4 0)
-    ENDIF(GCC_VERSION MATCHES ".*\\(GCC\\) 4\\.[0-9].*")
-
     # If the user hasn't specifically said whether they want
-    # -fvisibility=hidden or not, turn it on for gcc4 and off
-    # for other gcc versions.
+    # -fvisibility=hidden or not, turn it on if it's said to
+    # be supported, off for other gcc versions.
     IF(NOT DEFINED PODOFO_USE_VISIBILITY)
-        SET(PODOFO_USE_VISIBILITY ${PODOFO_HAVE_GCC4})
+        SET(PODOFO_USE_VISIBILITY ${PODOFO_HAVE_GCC_SYMBOL_VISIBILITY})
     ENDIF(NOT DEFINED PODOFO_USE_VISIBILITY)
 
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++98")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Woverloaded-virtual -Wswitch-enum -Wcast-qual -Wwrite-strings -Wredundant-decls -Wreorder")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Woverloaded-virtual -Wswitch-enum -Wcast-qual -Wwrite-strings -Wredundant-decls -Wreorder -Wno-deprecated-declarations")
 
     #
     # Note that we do not need debug definitions here. Set
@@ -375,7 +367,20 @@ IF(PNG_FOUND)
   INCLUDE_DIRECTORIES(${PNG_INCLUDE_DIR})
 ELSE(PNG_FOUND)
   MESSAGE("LibPng not found. PNG support will be disabled")
+  SET(PNG_LIBRARIES "")
 ENDIF(PNG_FOUND)
+
+FIND_PACKAGE(UNISTRING)
+
+IF(UNISTRING_FOUND)
+  MESSAGE("Found LibUnistring headers in ${UNISTRING_INCLUDE_DIR}, library at ${UNISTRING_LIBRARY}")
+  SET(PODOFO_HAVE_UNISTRING_LIB TRUE)
+  INCLUDE_DIRECTORIES(${UNISTRING_INCLUDE_DIR})
+ELSE(UNISTRING_FOUND)
+  MESSAGE("LibUnistring not found. Unistring support will be disabled")
+  SET(UNISTRING_LIBRARY "")
+ENDIF(UNISTRING_FOUND)
+
 
 IF(NOT PODOFO_BUILD_LIB_ONLY)
 
@@ -496,12 +501,14 @@ SET(PODOFO_LIB_DEPENDS
   ${LIBIDN_LIBRARIES}
   ${LIBCRYPTO_LDFLAGS}
   ${LIBCRYPTO_LIBRARIES}
+  ${OPENSSL_LIBRARIES}
   ${LIBJPEG_LIBRARIES}
   ${PLATFORM_SYSTEM_LIBRARIES}
   ${stlport_libraries_if_use_stlport}
   ${FREETYPE_LIBRARIES}
   ${PNG_LIBRARIES}
   ${TIFF_LIBRARIES}
+  ${UNISTRING_LIBRARY}
   )
 
 IF(FONTCONFIG_FOUND AND WANT_FONTCONFIG)
@@ -509,10 +516,16 @@ IF(FONTCONFIG_FOUND AND WANT_FONTCONFIG)
   INCLUDE_DIRECTORIES(${FONTCONFIG_INCLUDE_DIR})
 ENDIF(FONTCONFIG_FOUND AND WANT_FONTCONFIG)
 
-SET(PODOFO_LIB
-    podofo
-    ${PODOFO_LIB_DEPENDS}
-    )
+IF(WIN32 OR PODOFO_BUILD_STATIC)
+  SET(PODOFO_LIB
+      podofo
+      ${PODOFO_LIB_DEPENDS}
+      )
+ELSE(WIN32 OR PODOFO_BUILD_STATIC)
+  SET(PODOFO_LIB podofo
+      ${stlport_libraries_if_use_stlport}
+      )
+ENDIF(WIN32 OR PODOFO_BUILD_STATIC)
 
 #
 # Setup directories we will need
@@ -536,7 +549,7 @@ IF(NOT PODOFO_BUILD_LIB_ONLY)
 ADD_SUBDIRECTORY(test)
 ADD_SUBDIRECTORY(tools)
 ADD_SUBDIRECTORY(examples)
-ADD_SUBDIRECTORY(debian)
+ADD_SUBDIRECTORY(man)
 ENDIF(NOT PODOFO_BUILD_LIB_ONLY)
 
 # Generate our configure file

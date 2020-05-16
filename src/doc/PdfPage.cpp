@@ -40,6 +40,7 @@
 #include "base/PdfVariant.h"
 #include "base/PdfWriter.h"
 #include "base/PdfStream.h"
+#include "base/PdfColor.h"
 
 #include "PdfDocument.h"
 
@@ -87,13 +88,18 @@ PdfPage::PdfPage( PdfObject* pObject, const std::deque<PdfObject*> & rListOfPare
 
 PdfPage::~PdfPage()
 {
-    TIMapAnnotation it = m_mapAnnotations.begin();
+    TIMapAnnotation ait, aend = m_mapAnnotations.end();
 
-    while( it != m_mapAnnotations.end() )
+    for( ait = m_mapAnnotations.begin(); ait != aend; ait++ )
     {
-        delete (*it).second;
+        delete (*ait).second;
+    }
 
-        ++it;
+    TIMapAnnotationDirect dit, dend = m_mapAnnotationsDirect.end();
+
+    for( dit = m_mapAnnotationsDirect.begin(); dit != dend; dit++ )
+    {
+        delete (*dit).second;
     }
 
     delete m_pContents;	// just clears the C++ object from memory, NOT the PdfObject
@@ -212,7 +218,7 @@ PdfRect PdfPage::CreateStandardPageSize( const EPdfPageSize ePageSize, bool bLan
     return rect;
 }
 
-const PdfObject* PdfPage::GetInheritedKeyFromObject( const char* inKey, const PdfObject* inObject ) const
+const PdfObject* PdfPage::GetInheritedKeyFromObject( const char* inKey, const PdfObject* inObject, int depth ) const
 {
     const PdfObject* pObj = NULL;
 
@@ -227,9 +233,29 @@ const PdfObject* PdfPage::GetInheritedKeyFromObject( const char* inKey, const Pd
     // if we get here, we need to go check the parent - if there is one!
     if( inObject->GetDictionary().HasKey( "Parent" ) ) 
     {
+        // CVE-2017-5852 - prevent stack overflow if Parent chain contains a loop, or is very long
+        // e.g. pObj->GetParent() == pObj or pObj->GetParent()->GetParent() == pObj
+        // default stack sizes
+        // Windows: 1 MB
+        // Linux: 2 MB
+        // macOS: 8 MB for main thread, 0.5 MB for secondary threads
+        // 0.5 MB is enough space for 1000 512 byte stack frames and 2000 256 byte stack frames
+        const int maxRecursionDepth = 1000;
+
+        if ( depth > maxRecursionDepth )
+            PODOFO_RAISE_ERROR( ePdfError_ValueOutOfRange );
+
         pObj = inObject->GetIndirectKey( "Parent" );
+        if( pObj == inObject )
+        {
+            std::ostringstream oss;
+            oss << "Object " << inObject->Reference().ObjectNumber() << " "
+                << inObject->Reference().GenerationNumber() << " references itself as Parent";
+            PODOFO_RAISE_ERROR_INFO( ePdfError_BrokenFile, oss.str().c_str() );
+        }
+
         if( pObj )
-            pObj = GetInheritedKeyFromObject( inKey, pObj );
+            pObj = GetInheritedKeyFromObject( inKey, pObj, depth + 1 );
     }
 
     return pObj;
@@ -349,19 +375,32 @@ PdfAnnotation* PdfPage::GetAnnotation( int index )
         PODOFO_RAISE_ERROR( ePdfError_ValueOutOfRange );
     }
 
-    ref    = pObj->GetArray()[index].GetReference();
-    pAnnot = m_mapAnnotations[ref];
-    if( !pAnnot )
+    PdfObject* pItem = &(pObj->GetArray()[index]);
+    if( pItem->IsDictionary() )
     {
-        pObj = this->GetObject()->GetOwner()->GetObject( ref );
-        if( !pObj )
+        pAnnot = m_mapAnnotationsDirect[pItem];
+        if( !pAnnot )
         {
-            PdfError::DebugMessage( "Error looking up object %i %i R\n", ref.ObjectNumber(), ref.GenerationNumber() );
-            PODOFO_RAISE_ERROR( ePdfError_NoObject );
+            pAnnot = new PdfAnnotation( pItem, this );
+            m_mapAnnotationsDirect[pItem] = pAnnot;
         }
-     
-        pAnnot = new PdfAnnotation( pObj, this );
-        m_mapAnnotations[ref] = pAnnot;
+    }
+    else
+    {
+        ref = pItem->GetReference();
+        pAnnot = m_mapAnnotations[ref];
+        if( !pAnnot )
+        {
+            pObj = this->GetObject()->GetOwner()->GetObject( ref );
+            if( !pObj )
+            {
+                PdfError::DebugMessage( "Error looking up object %i %i R\n", ref.ObjectNumber(), ref.GenerationNumber() );
+                PODOFO_RAISE_ERROR( ePdfError_NoObject );
+            }
+
+            pAnnot = new PdfAnnotation( pObj, this );
+            m_mapAnnotations[ref] = pAnnot;
+        }
     }
 
     return pAnnot;
@@ -369,22 +408,39 @@ PdfAnnotation* PdfPage::GetAnnotation( int index )
 
 void PdfPage::DeleteAnnotation( int index )
 {
-    PdfReference   ref;
-    PdfObject*     pObj   = this->GetAnnotationsArray( false );
-    
+    PdfObject* pObj = this->GetAnnotationsArray( false );
+    PdfObject* pItem;
+
     if( !(pObj && pObj->IsArray()) )
     {
         PODOFO_RAISE_ERROR( ePdfError_InvalidDataType );
     }
-    
+
     if( index < 0 && static_cast<unsigned int>(index) >= pObj->GetArray().size() )
     {
         PODOFO_RAISE_ERROR( ePdfError_ValueOutOfRange );
     }
 
-    ref    = pObj->GetArray()[index].GetReference();
+    pItem = &(pObj->GetArray()[index]);
 
-    this->DeleteAnnotation( ref );
+    if( pItem->IsDictionary() )
+    {
+        PdfAnnotation* pAnnot;
+
+        pObj->GetArray().erase( pObj->GetArray().begin() + index );
+
+        // delete any cached PdfAnnotations
+        pAnnot = m_mapAnnotationsDirect[pItem];
+        if( pAnnot )
+        {
+            delete pAnnot;
+            m_mapAnnotationsDirect.erase( pItem );
+        }
+    }
+    else
+    {
+        this->DeleteAnnotation( pItem->GetReference() );
+    }
 }
 
 void PdfPage::DeleteAnnotation( const PdfReference & ref )
@@ -404,7 +460,7 @@ void PdfPage::DeleteAnnotation( const PdfReference & ref )
     it = pObj->GetArray().begin();
     while( it != pObj->GetArray().end() ) 
     {
-        if( (*it).GetReference() == ref ) 
+        if( (*it).IsReference() && (*it).GetReference() == ref ) 
         {
             pObj->GetArray().erase( it );
             bFound = true;
@@ -523,6 +579,11 @@ unsigned int PdfPage::GetPageNumber() const
     PdfObject*          pParent     = this->GetObject()->GetIndirectKey( "Parent" );
     PdfReference ref                = this->GetObject()->Reference();
 
+    // CVE-2017-5852 - prevent infinite loop if Parent chain contains a loop
+    // e.g. pParent->GetIndirectKey( "Parent" ) == pParent or pParent->GetIndirectKey( "Parent" )->GetIndirectKey( "Parent" ) == pParent
+    const int maxRecursionDepth = 1000;
+    int depth = 0;
+
     while( pParent ) 
     {
         PdfObject* pKids = pParent->GetIndirectKey( "Kids" );
@@ -554,6 +615,12 @@ unsigned int PdfPage::GetPageNumber() const
 
         ref     = pParent->Reference();
         pParent = pParent->GetIndirectKey( "Parent" );
+        ++depth;
+
+        if ( depth > maxRecursionDepth )
+        {
+            PODOFO_RAISE_ERROR_INFO( ePdfError_BrokenFile, "Loop in Parent chain" );
+        }
     }
 
     return ++nPageNumber;
@@ -611,10 +678,15 @@ PdfObject* PdfPage::GetFromResources( const PdfName & rType, const PdfName & rKe
         // OC 15.08.2010 BugFix: Ghostscript creates here sometimes an indirect reference to a directory
      // PdfObject* pType = m_pResources->GetDictionary().GetKey( rType );
         PdfObject* pType = m_pResources->GetIndirectKey( rType );
-        if( pType->IsDictionary() && pType->GetDictionary().HasKey( rKey ) )
+        if( pType && pType->IsDictionary() && pType->GetDictionary().HasKey( rKey ) )
         {
-            const PdfReference & ref = pType->GetDictionary().GetKey( rKey )->GetReference();
-            return this->GetObject()->GetOwner()->GetObject( ref );
+            PdfObject* pObj = pType->GetDictionary().GetKey( rKey ); // CB 08.12.2017 Can be an array
+            if (pObj->IsReference())
+            {
+                const PdfReference & ref = pType->GetDictionary().GetKey( rKey )->GetReference();
+                return this->GetObject()->GetOwner()->GetObject( ref );
+            }
+            return pObj; // END
         }
     }
     
@@ -655,6 +727,35 @@ PdfObject* PdfPage::GetOwnAnnotationsArray( bool bCreate, PdfDocument *pDocument
     }
 
     return NULL;
+}
+
+void PdfPage::SetICCProfile( const char *pszCSTag, PdfInputStream *pStream, pdf_int64 nColorComponents, EPdfColorSpace eAlternateColorSpace )
+{
+    // Check nColorComponents for a valid value
+    if ( nColorComponents != 1 &&
+         nColorComponents != 3 &&
+         nColorComponents != 4 )
+    {
+        PODOFO_RAISE_ERROR_INFO( ePdfError_ValueOutOfRange, "SetICCProfile nColorComponents must be 1, 3 or 4!" );
+    }
+
+    // Create a colorspace object
+    PdfObject* iccObject = this->GetObject()->GetOwner()->CreateObject();
+    PdfName nameForCS = PdfColor::GetNameForColorSpace( eAlternateColorSpace );
+    iccObject->GetDictionary().AddKey( PdfName("Alternate"), nameForCS );
+    iccObject->GetDictionary().AddKey( PdfName("N"), nColorComponents );
+    iccObject->GetStream()->Set( pStream );
+
+    // Add the colorspace
+    PdfArray array;
+    array.push_back( PdfName("ICCBased") );
+    array.push_back( iccObject->Reference() );
+
+    PoDoFo::PdfDictionary iccBasedDictionary;
+    iccBasedDictionary.AddKey( PdfName(pszCSTag), array );
+
+    // Add the colorspace to resource
+    GetResources()->GetDictionary().AddKey( PdfName("ColorSpace"), iccBasedDictionary );
 }
 
 

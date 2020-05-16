@@ -276,6 +276,14 @@ class PODOFO_API PdfVariant {
      */
     inline double GetReal() const;
 
+    /** Set the string value of this object.
+     * \param str the string value
+     *
+     * This will set the dirty flag of this object.
+     * \see IsDirty
+     */
+    inline void SetString(const PdfString & str);
+
     /** \returns the value of the object as string.
      */
     inline const PdfString & GetString() const;
@@ -513,7 +521,7 @@ class PODOFO_API PdfVariant {
      *  required to access the correct member of 
      *  the union UVariant.
      */
-    EPdfDataType m_eDataType;
+    pdf_int8 m_eDataType;
 
     // No touchy. Only for use by PdfVariant's internal tracking of the delayed
     // loading state. Use DelayedLoadDone() to test this if you need to.
@@ -574,7 +582,7 @@ EPdfDataType PdfVariant::GetDataType() const
 {
     DelayedLoad();
 
-    return m_eDataType;
+    return static_cast<EPdfDataType>(m_eDataType);
 }
 
 // -----------------------------------------------------
@@ -722,6 +730,23 @@ PdfData & PdfVariant::GetRawData()
     // We need a c-style casts here to avoid crashes
     // because a reinterpret_cast might point to a different position.
     return *((PdfData*)m_Data.pData);
+}
+
+// -----------------------------------------------------
+//
+// -----------------------------------------------------
+void PdfVariant::SetString(const PdfString &str)
+{
+    DelayedLoad();
+
+    if (!IsString())
+    {
+        PODOFO_RAISE_ERROR(ePdfError_InvalidDataType);
+    }
+
+    AssertMutable();
+    *((PdfString*)m_Data.pData) = str;
+    SetDirty(true);
 }
 
 // -----------------------------------------------------

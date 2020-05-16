@@ -2473,3 +2473,4 @@ void ColorTest::testRGBtoCMYKConversions()
         ASSERT_TRUE(rgbColor == cmykColor.ConvertToRGB());
     }
 }
+

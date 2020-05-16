@@ -154,7 +154,7 @@ public:
                         }
 
                         // TODO: implement tiff predictor for other than 8 BPC
-                        PODOFO_RAISE_ERROR( ePdfError_InvalidPredictor );
+                        PODOFO_RAISE_ERROR_INFO( ePdfError_InvalidPredictor, "tiff predictors other than 8 BPC are not implemented" );
                         break;
                     }
                     case 10: // png none
@@ -182,8 +182,11 @@ public:
                         break;
                     }
                     case 14: // png paeth
+                        PODOFO_RAISE_ERROR_INFO( ePdfError_InvalidPredictor, "png paeth predictor is not implemented" );
+                        break;
+
                     case 15: // png optimum
-                        PODOFO_RAISE_ERROR( ePdfError_InvalidPredictor );
+                        PODOFO_RAISE_ERROR_INFO( ePdfError_InvalidPredictor, "png optimum predictor is not implemented" );
                         break;
                         
                     default:
@@ -1273,9 +1276,9 @@ void PdfCCITTFilter::BeginDecodeImpl( const PdfDictionary* pDict )
     }
     */
 
+#else // DS_CCITT_DEVELOPMENT_CODE
+    PODOFO_RAISE_ERROR( ePdfError_UnsupportedFilter );
 #endif // DS_CCITT_DEVELOPMENT_CODE
-
-
 }
 #ifndef _MSC_VER
 #pragma GCC diagnostic pop
@@ -1283,11 +1286,12 @@ void PdfCCITTFilter::BeginDecodeImpl( const PdfDictionary* pDict )
 
 void PdfCCITTFilter::DecodeBlockImpl( const char*, pdf_long )
 {
-
+    PODOFO_RAISE_ERROR( ePdfError_UnsupportedFilter );
 }
 
 void PdfCCITTFilter::EndDecodeImpl()
 {
+    PODOFO_RAISE_ERROR( ePdfError_UnsupportedFilter );
 }
 
 #endif // PODOFO_HAVE_TIFF_LIB

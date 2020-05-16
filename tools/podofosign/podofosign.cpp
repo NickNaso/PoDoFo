@@ -27,7 +27,16 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/ssl.h>
 #include <openssl/x509.h>
+
+#if defined(_WIN64)
+#define fseeko _fseeki64
+#define ftello _ftelli64
+#else
+#define fseeko fseek
+#define ftello ftell
+#endif
 
 using namespace PoDoFo;
 
@@ -866,11 +875,15 @@ int main( int argc, char* argv[] )
         outputfile = NULL;
     }
 
+#ifdef PODOFO_HAVE_OPENSSL_1_1
+    OPENSSL_init_crypto(0, NULL);
+#else
     OpenSSL_add_all_algorithms();
     ERR_load_crypto_strings();
     ERR_load_PEM_strings();
     ERR_load_ASN1_strings();
     ERR_load_EVP_strings();
+#endif
 
     X509* cert = NULL;
     EVP_PKEY* pkey = NULL;
@@ -1074,7 +1087,9 @@ int main( int argc, char* argv[] )
         result = e.GetError();
     }
 
+#ifndef PODOFO_HAVE_OPENSSL_1_1
     ERR_free_strings();
+#endif
 
     if( pSignField )
         delete pSignField;

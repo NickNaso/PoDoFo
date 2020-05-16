@@ -2,7 +2,7 @@
 
 ## Mirror repository for PoDoFo a library to work with the PDF file format.
 
-### Version 0.9.5
+### Version 0.9.6
 
 <ol>
 	<li><a href="#what_is_podofo">What is PoDoFo?</a></li>
@@ -721,6 +721,3 @@ website, but the licenses have the final say.</p>
     </ul>
 </li>
 </ul>
-
-
-

@@ -34,6 +34,7 @@
 #include "PdfPagesTree.h"
 
 #include "base/PdfDefinesPrivate.h"
+#include <algorithm>
 
 #include "base/PdfArray.h"
 #include "base/PdfDictionary.h"
@@ -246,11 +247,13 @@ PdfPage* PdfPagesTree::InsertPage( const PdfRect & rSize, int atIndex)
 {
     PdfPage* pPage = new PdfPage( rSize, GetRoot()->GetOwner() );
 
-	 if (atIndex < 0 || atIndex >= this->GetTotalNumberOfPages()) {
-		 atIndex = this->GetTotalNumberOfPages() - 1;
-	 }
+    int pageCount;
+    if ( atIndex < 0 )
+        atIndex = 0;
+    else if ( atIndex > ( pageCount = this->GetTotalNumberOfPages() ) )
+        atIndex = pageCount;
 
-	 InsertPage( atIndex - 1, pPage );
+    InsertPage( atIndex - 1, pPage );
     m_cache.AddPageObject( atIndex, pPage );
 
     return pPage;
@@ -478,7 +481,18 @@ PdfObject* PdfPagesTree::GetPageNodeFromArray( int nPageNum, const PdfArray & rK
         if( rVar.IsArray() ) 
         {
             // Fixes some broken PDFs who have trees with 1 element kids arrays
-            return GetPageNodeFromArray( 0, rVar.GetArray(), rLstParents );
+            // Recursive call removed to prevent stack overflow (CVE-2017-8054)
+            // replaced by the following inside this conditional incl. continue
+            const PdfArray & rVarArray = rVar.GetArray();
+            if (rVarArray.GetSize() == 0)
+            {
+                PdfError::LogMessage( eLogSeverity_Critical, "Trying to access"
+                    " first page index of empty array" );
+                return NULL;
+            }
+            PdfVariant rVarFirstEntry = rVarArray[0]; // avoids use-after-free
+            rVar = rVarFirstEntry; // in this line (rVar-ref'd array is freed)
+            continue;
         }
         else if( !rVar.IsReference() )
         {
@@ -486,9 +500,11 @@ PdfObject* PdfPagesTree::GetPageNodeFromArray( int nPageNum, const PdfArray & rK
         }
 
         PdfObject* pgObject = GetRoot()->GetOwner()->GetObject( rVar.GetReference() );
-		if(pgObject==NULL) {
+		if(pgObject==NULL)
+        {
 			PODOFO_RAISE_ERROR_INFO( ePdfError_PageNotFound, "Invalid reference." );
 		}
+
         //printf("Reading %s\n", pgObject->Reference().ToString().c_str());
         // make sure the object is a /Page and not a /Pages with a single kid
         if( this->IsTypePage(pgObject) ) 
@@ -502,12 +518,24 @@ PdfObject* PdfPagesTree::GetPageNodeFromArray( int nPageNum, const PdfArray & rK
             if( !pgObject->GetDictionary().HasKey( "Kids" ) )
                 return NULL;
 
+            if ( std::find( rLstParents.begin(), rLstParents.end(), pgObject )
+                != rLstParents.end() ) // cycle in parent list detected, fend
+            { // off security vulnerability CVE-2017-8054 (infinite recursion)
+                std::ostringstream oss;
+                oss << "Cycle in page tree: child in /Kids array of object "
+                    << ( *(rLstParents.rbegin()) )->Reference().ToString()
+                    << " back-references to object " << pgObject->Reference()
+                    .ToString() << " one of whose descendants the former is.";
+
+                PODOFO_RAISE_ERROR_INFO( ePdfError_PageNotFound, oss.str() );
+            }
+
             rLstParents.push_back( pgObject );
             rVar = *(pgObject->GetDictionary().GetKey( "Kids" ));
         } else {
-	  // Reference to unexpected object
-	  PODOFO_RAISE_ERROR_INFO( ePdfError_PageNotFound, "Reference to unexpected object." );
-	}
+            // Reference to unexpected object
+            PODOFO_RAISE_ERROR_INFO( ePdfError_PageNotFound, "Reference to unexpected object." );
+        }
     }
 
     return NULL;
